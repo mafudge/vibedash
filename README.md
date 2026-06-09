@@ -1,18 +1,29 @@
 # VibeDash
 
-A Flutter desktop dashboard for managing project deployments across remote hosts.
+A Flutter desktop dashboard for managing vibe project deployments across remote hosts.
 
 ![VibeDash](logos/vibedash.png)
 
+## Problem this solves
+
+If you're like me, thanks to ClaudeCode/Codex/OpenCode/Copilot, you can "develop" several applications at the same time.  While awesome, the task switching is problematic.
+
+- I have 6 computers I remote into, plus my host machine.
+- What is running in this computer / terminal?
+- Oops... I typed the wrong command here. That was supposed to go in that Claude Code terminal.
+- Oy. Thought something was running... its not.
+
 ## What it does
 
-VibeDash gives you a single view of your projects and the hosts they're deployed on. You can:
+VibeDash gives you a single view of your vibe coding projects and the hosts they're deployed on. You can:
 
 - **Track deployments** — assign projects to hosts with drag-and-drop
 - **Connect to hosts** — click Connect to open a terminal running the host's connect command (e.g. `ssh user@host`)
 - **Manage projects and hosts** — add, edit, and remove entries; state persists across sessions
 
 Connect commands are shell-executed, not copied to clipboard. On Windows, console commands open a new PowerShell window; GUI executables (e.g. AutoHotkey) are launched directly. On macOS, Terminal.app opens. On Linux/WSL, the first available terminal emulator is used.
+
+**NOTE:** Its not a process monitor. It cannot update the project to host assignments for you. Think of it as a project board where you can label which host is working on which project and easily swtich to that host.
 
 ## Platforms
 
