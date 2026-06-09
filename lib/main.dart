@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:process_run/process_run.dart' show shellArgument, whichSync;
 
 const List<Color> hostColorChoices = [
   Color(0xFF1D4ED8),
@@ -18,21 +21,22 @@ const List<Color> hostColorChoices = [
   Color(0xFFC0C0C0),
 ];
 
-const appDisplayTitle = 'VibeDash 1.0.0';
-
-void main() {
-  runApp(const MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final packageInfo = await PackageInfo.fromPlatform();
+  runApp(MyApp(version: packageInfo.version));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key, this.storage});
+  const MyApp({super.key, this.storage, required this.version});
 
   final VibeDashStorage? storage;
+  final String version;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: appDisplayTitle,
+      title: 'VibeDash $version',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -42,15 +46,16 @@ class MyApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF0C111B),
         useMaterial3: true,
       ),
-      home: VibeDashPrototype(storage: storage),
+      home: VibeDashPrototype(storage: storage, version: version),
     );
   }
 }
 
 class VibeDashPrototype extends StatefulWidget {
-  const VibeDashPrototype({super.key, this.storage});
+  const VibeDashPrototype({super.key, this.storage, required this.version});
 
   final VibeDashStorage? storage;
+  final String version;
 
   @override
   State<VibeDashPrototype> createState() => _VibeDashPrototypeState();
@@ -549,6 +554,7 @@ class _VibeDashPrototypeState extends State<VibeDashPrototype> {
                     child: ProjectPane(
                       projects: _projects,
                       hostsById: hostsById,
+                      version: widget.version,
                       isUnlocked: _hostManagementUnlocked,
                       onAddProject: _addProject,
                       onDeleteProject: _deleteProject,
@@ -596,6 +602,7 @@ class ProjectPane extends StatelessWidget {
     super.key,
     required this.projects,
     required this.hostsById,
+    required this.version,
     required this.isUnlocked,
     required this.onAddProject,
     required this.onDeleteProject,
@@ -607,6 +614,7 @@ class ProjectPane extends StatelessWidget {
 
   final List<VibeProject> projects;
   final Map<String, RemoteHost> hostsById;
+  final String version;
   final bool isUnlocked;
   final VoidCallback onAddProject;
   final ValueChanged<VibeProject> onDeleteProject;
@@ -625,7 +633,7 @@ class ProjectPane extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'VibeDash',
+              'VibeDash $version',
               style: Theme.of(
                 context,
               ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
@@ -1019,18 +1027,18 @@ class HostCard extends StatelessWidget {
   final Future<void> Function() onUnassign;
 
   Future<void> _connectToHost(BuildContext context) async {
-    await Clipboard.setData(ClipboardData(text: host.connectCommand));
-
-    if (!context.mounted) {
-      return;
+    try {
+      await launchTerminalWithCommand(host.connectCommand);
+    } on ProcessException catch (error) {
+      if (!context.mounted) return;
+      final message = error.message.isEmpty ? error.toString() : error.message;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not connect to ${host.name}: $message'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Connect command copied for ${host.name}.'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
   }
 
   @override
@@ -1887,6 +1895,173 @@ String _describeFileSystemError(
 }) {
   final message = error.message.isEmpty ? error.toString() : error.message;
   return 'Could not $action dashboard state: $message';
+}
+
+Future<void> launchTerminalWithCommand(String command) async {
+  if (command.trim().isEmpty) return;
+
+  if (Platform.isWindows) {
+    if (await _isWindowsGuiApp(command)) {
+      // GUI app: it creates its own window — launch directly, no terminal needed.
+      final (exe, args) = _parseWindowsCommand(command);
+      await Process.start(exe, args, mode: ProcessStartMode.detached);
+    } else {
+      // Console/interactive command: open a terminal window.
+      // Prefer PowerShell Core (pwsh) over Windows PowerShell 5 (powershell).
+      // cmd /c start opens a new visible window; PowerShell handles paths with
+      // spaces via the & call operator (cmd /k strips outer quotes and breaks them).
+      final ps = whichSync('pwsh') != null ? 'pwsh' : 'powershell';
+      await Process.start(
+        'cmd',
+        ['/c', 'start', ps, '-NoExit', '-Command', _toWindowsShellCommand(command)],
+        mode: ProcessStartMode.detached,
+      );
+    }
+  } else if (Platform.isMacOS) {
+    final escaped = command.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+    await Process.start(
+      'osascript',
+      ['-e', 'tell application "Terminal" to do script "$escaped"'],
+      mode: ProcessStartMode.detached,
+    );
+  } else {
+    // WSL: no Linux terminal emulator is typically installed — open a
+    // Windows-side terminal instead.
+    if (_isWsl()) {
+      await _launchWslTerminal(command);
+      return;
+    }
+
+    // Native Linux: use whichSync to find the first available terminal.
+    const candidates = [
+      'x-terminal-emulator',
+      'gnome-terminal',
+      'konsole',
+      'xfce4-terminal',
+      'lxterminal',
+      'mate-terminal',
+      'xterm',
+    ];
+    final terminal = candidates.where((t) => whichSync(t) != null).firstOrNull;
+    if (terminal == null) {
+      throw ProcessException(
+        'No terminal emulator found. Install one with: sudo apt install xterm',
+        [],
+      );
+    }
+    final args = switch (terminal) {
+      'gnome-terminal' => ['--', 'bash', '-c', command],
+      'konsole' || 'xfce4-terminal' => ['-e', 'bash -c ${shellArgument(command)}'],
+      _ => ['-e', command],
+    };
+    await Process.start(terminal, args, mode: ProcessStartMode.detached);
+  }
+}
+
+bool _isWsl() {
+  try {
+    return File('/proc/version')
+        .readAsStringSync()
+        .toLowerCase()
+        .contains('microsoft');
+  } catch (_) {
+    return false;
+  }
+}
+
+Future<void> _launchWslTerminal(String command) async {
+  // Prefer Windows Terminal (wt.exe); fall back to a plain cmd window.
+  if (whichSync('wt.exe') != null) {
+    await Process.start(
+      'wt.exe',
+      ['bash', '-c', command],
+      mode: ProcessStartMode.detached,
+    );
+  } else {
+    final escaped = command.replaceAll('"', '\\"');
+    await Process.start(
+      'cmd.exe',
+      ['/c', 'start', 'cmd', '/k', 'bash -c "$escaped"'],
+      mode: ProcessStartMode.detached,
+    );
+  }
+}
+
+// Reads the Windows PE header to check whether the executable is a GUI app
+// (IMAGE_SUBSYSTEM_WINDOWS_GUI == 2). GUI apps create their own window so
+// we can launch them directly without opening a terminal.
+Future<bool> _isWindowsGuiApp(String command) async {
+  final (exe, _) = _parseWindowsCommand(command);
+  final exePath = RegExp(r'^[A-Za-z]:\\').hasMatch(exe) ? exe : whichSync(exe);
+  if (exePath == null) return false;
+  try {
+    final raf = await File(exePath).open();
+    try {
+      // Read enough bytes to cover the PE optional header (usually < 512 bytes in).
+      final bytes = (await raf.read(4096)).buffer.asByteData();
+      if (bytes.lengthInBytes < 0x40) return false;
+      final peOffset = bytes.getUint32(0x3C, Endian.little);
+      final end = peOffset + 4 + 20 + 70; // sig + COFF header + subsystem field
+      if (end > bytes.lengthInBytes) return false;
+      // Verify 'PE\0\0' signature.
+      if (bytes.getUint32(peOffset, Endian.little) != 0x00004550) return false;
+      // Subsystem: offset 68 into the optional header (after 4-byte sig + 20-byte COFF).
+      final subsystem = bytes.getUint16(peOffset + 24 + 68, Endian.little);
+      return subsystem == 2; // IMAGE_SUBSYSTEM_WINDOWS_GUI
+    } finally {
+      await raf.close();
+    }
+  } catch (_) {
+    return false;
+  }
+}
+
+// Splits a raw command string into (executable, arguments).
+// Strips any surrounding quotes from the executable path.
+(String, List<String>) _parseWindowsCommand(String command) {
+  final trimmed = command.trim();
+  // Quoted executable: "C:\Program Files\foo.exe" arg1 arg2
+  final quoted = RegExp(r'^"([^"]+)"(?:\s+(.*))?$').firstMatch(trimmed);
+  if (quoted != null) {
+    final exe = quoted.group(1)!;
+    final rest = quoted.group(2)?.trim() ?? '';
+    return (exe, rest.isEmpty ? [] : rest.split(RegExp(r'\s+')));
+  }
+  // Unquoted: detect exe boundary by extension then whitespace.
+  final unquoted =
+      RegExp(r'^(.+?\.[a-zA-Z0-9]{1,4})(?:\s+(.*))?$').firstMatch(trimmed);
+  if (unquoted != null) {
+    final exe = unquoted.group(1)!;
+    final rest = unquoted.group(2)?.trim() ?? '';
+    return (exe, rest.isEmpty ? [] : rest.split(RegExp(r'\s+')));
+  }
+  final parts = trimmed.split(RegExp(r'\s+'));
+  return (parts.first, parts.skip(1).toList());
+}
+
+// Converts a raw connect command into a form PowerShell can execute.
+// Unquoted Windows absolute paths with spaces are wrapped with the & call
+// operator so PowerShell does not mistake the space as an argument boundary.
+// shellArgument (process_run) handles cross-platform quoting.
+String _toWindowsShellCommand(String command) {
+  final trimmed = command.trim();
+  if (trimmed.startsWith('"') ||
+      trimmed.startsWith("'") ||
+      !trimmed.contains(' ') ||
+      !RegExp(r'^[A-Za-z]:\\').hasMatch(trimmed)) {
+    return trimmed;
+  }
+
+  // Split at the first file-extension boundary to separate exe from args.
+  final match =
+      RegExp(r'^(.+?\.[a-zA-Z0-9]{1,4})(?:\s+(.*))?$').firstMatch(trimmed);
+  if (match != null) {
+    final exe = shellArgument(match.group(1)!);
+    final args = match.group(2)?.trim() ?? '';
+    return args.isEmpty ? '& $exe' : '& $exe $args';
+  }
+
+  return '& ${shellArgument(trimmed)}';
 }
 
 Future<void> openExternalUrl(BuildContext context, String url) async {
