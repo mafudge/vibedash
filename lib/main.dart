@@ -18,6 +18,8 @@ const List<Color> hostColorChoices = [
   Color(0xFFC0C0C0),
 ];
 
+const appDisplayTitle = 'VibeDash 1.0.0';
+
 void main() {
   runApp(const MyApp());
 }
@@ -30,7 +32,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'VibeDash',
+      title: appDisplayTitle,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
