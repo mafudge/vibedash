@@ -6,12 +6,16 @@ A Flutter desktop dashboard for managing vibe project deployments across remote 
 
 ## Problem this solves
 
-If you're like me, thanks to ClaudeCode/Codex/OpenCode/Copilot, you can "develop" several applications at the same time.  While awesome, the task switching is problematic.
+AI coding tools like Claude Code, Codex, and Copilot make it easy to run multiple
+projects in parallel — sometimes too easy. Suddenly you have six machines, a dozen
+terminals, and no idea what's running where.
 
-- I have 6 computers I remote into, plus my host machine.
-- What is running in this computer / terminal?
-- Oops... I typed the wrong command here. That was supposed to go in that Claude Code terminal.
-- Oy. Thought something was running... its not.
+- Which host was I using for that project?
+- Did I deploy that, or just think I did?
+- Oops — wrong terminal. That command was meant for the other machine.
+
+VibeDash is a lightweight project board for vibe coders: pin your projects to your
+hosts, see the full picture at a glance, and jump straight to the right terminal.
 
 ## What it does
 
