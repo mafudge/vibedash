@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -304,6 +305,7 @@ class _VibeDashPrototypeState extends State<VibeDashPrototype> {
           id: projectId,
           name: draft.name,
           githubUrl: draft.githubUrl,
+          label: draft.label,
         ),
       );
     });
@@ -334,6 +336,7 @@ class _VibeDashPrototypeState extends State<VibeDashPrototype> {
       _projects[projectIndex] = project.copyWith(
         name: draft.name,
         githubUrl: draft.githubUrl,
+        label: draft.label,
       );
     });
   }
@@ -484,6 +487,106 @@ class _VibeDashPrototypeState extends State<VibeDashPrototype> {
     }
   }
 
+  Future<void> _exportDashboard() async {
+    final path = await FilePicker.platform.saveFile(
+      dialogTitle: 'Export VibeDash backup',
+      fileName: 'vibedash-backup.json',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+    if (path == null) return;
+
+    final document = VibeDashDocument.fromState(
+      projects: _projects,
+      hosts: _hosts,
+      deployments: _deployments,
+    );
+    const encoder = JsonEncoder.withIndent('  ');
+    final json = '${encoder.convert(document.toJson())}\n';
+
+    try {
+      await File(path).writeAsString(json);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Backup saved to $path'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FileSystemException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not save backup: ${error.message}'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _importDashboard() async {
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Import VibeDash backup',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+    if (result == null || result.files.isEmpty) return;
+    final path = result.files.first.path;
+    if (path == null) return;
+
+    try {
+      final contents = await File(path).readAsString();
+      final decoded = jsonDecode(contents);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Backup file must be a JSON object.');
+      }
+      final document = VibeDashDocument.fromJson(decoded);
+
+      if (!mounted) return;
+      final shouldReplace = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Restore backup?'),
+          content: const Text(
+            'This will replace all current projects, hosts, and deployments. This cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              key: const Key('confirm-restore-button'),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Restore'),
+            ),
+          ],
+        ),
+      );
+
+      if (!mounted || shouldReplace != true) return;
+
+      setState(() => _replaceDashboardState(document));
+      await _persistCurrentState();
+    } on FileSystemException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not read backup: ${error.message}'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Invalid backup file: ${error.message}'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   Future<void> _deleteHost(RemoteHost host) async {
     final shouldDelete = await showDialog<bool>(
       context: context,
@@ -585,6 +688,8 @@ class _VibeDashPrototypeState extends State<VibeDashPrototype> {
                       onMoveHostForward: (hostId) => _moveHost(hostId, 1),
                       onProjectDropped: _deployProjectToHost,
                       onUnassignProject: _unassignProjectFromHost,
+                      onExport: _exportDashboard,
+                      onImport: _importDashboard,
                     ),
                   ),
                 ],
@@ -597,7 +702,7 @@ class _VibeDashPrototypeState extends State<VibeDashPrototype> {
   }
 }
 
-class ProjectPane extends StatelessWidget {
+class ProjectPane extends StatefulWidget {
   const ProjectPane({
     super.key,
     required this.projects,
@@ -624,7 +729,30 @@ class ProjectPane extends StatelessWidget {
   final String? Function(String projectId) hostForProject;
 
   @override
+  State<ProjectPane> createState() => _ProjectPaneState();
+}
+
+class _ProjectPaneState extends State<ProjectPane> {
+  String? _activeLabel;
+
+  @override
   Widget build(BuildContext context) {
+    final allLabels = widget.projects
+        .map((p) => p.label)
+        .where((l) => l.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+
+    final effectiveLabel =
+        _activeLabel != null && allLabels.contains(_activeLabel)
+            ? _activeLabel
+            : null;
+
+    final filtered = effectiveLabel == null
+        ? widget.projects
+        : widget.projects.where((p) => p.label == effectiveLabel).toList();
+
     return ColoredBox(
       color: const Color(0xFF101826),
       child: Padding(
@@ -633,7 +761,7 @@ class ProjectPane extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'VibeDash $version',
+              'VibeDash ${widget.version}',
               style: Theme.of(
                 context,
               ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
@@ -647,7 +775,7 @@ class ProjectPane extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              isUnlocked
+              widget.isUnlocked
                   ? 'Project management is unlocked. You can add, edit, delete, or arrange projects.'
                   : 'Drag a project onto a host card to assign its deployment.',
               style: Theme.of(
@@ -659,31 +787,60 @@ class ProjectPane extends StatelessWidget {
               width: double.infinity,
               child: FilledButton.icon(
                 key: const Key('add-project-button'),
-                onPressed: isUnlocked ? onAddProject : null,
+                onPressed: widget.isUnlocked ? widget.onAddProject : null,
                 icon: const Icon(Icons.add),
                 label: const Text('Add project'),
               ),
             ),
+            if (allLabels.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  FilterChip(
+                    label: const Text('All'),
+                    selected: effectiveLabel == null,
+                    onSelected: (_) => setState(() => _activeLabel = null),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  for (final label in allLabels)
+                    FilterChip(
+                      label: Text(label),
+                      selected: effectiveLabel == label,
+                      onSelected: (_) => setState(() {
+                        _activeLabel = effectiveLabel == label ? null : label;
+                      }),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                ],
+              ),
+            ],
             const SizedBox(height: 16),
             Expanded(
               child: ListView.separated(
                 key: const Key('project-list-scroll-view'),
-                itemCount: projects.length,
+                itemCount: filtered.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 12),
                 itemBuilder: (context, index) {
-                  final project = projects[index];
-                  final hostId = hostForProject(project.id);
-                  final host = hostId == null ? null : hostsById[hostId];
+                  final project = filtered[index];
+                  final hostId = widget.hostForProject(project.id);
+                  final host = hostId == null ? null : widget.hostsById[hostId];
+                  final fullIndex = widget.projects.indexOf(project);
                   return ProjectTile(
                     project: project,
                     assignedHost: host,
-                    isUnlocked: isUnlocked,
-                    canMoveBackward: index > 0,
-                    canMoveForward: index < projects.length - 1,
-                    onDelete: () => onDeleteProject(project),
-                    onEdit: () => onEditProject(project),
-                    onMoveBackward: () => onMoveProjectBackward(project.id),
-                    onMoveForward: () => onMoveProjectForward(project.id),
+                    isUnlocked: widget.isUnlocked,
+                    canMoveBackward: effectiveLabel == null && fullIndex > 0,
+                    canMoveForward:
+                        effectiveLabel == null &&
+                        fullIndex < widget.projects.length - 1,
+                    onDelete: () => widget.onDeleteProject(project),
+                    onEdit: () => widget.onEditProject(project),
+                    onMoveBackward: () =>
+                        widget.onMoveProjectBackward(project.id),
+                    onMoveForward: () =>
+                        widget.onMoveProjectForward(project.id),
                   );
                 },
               ),
@@ -753,17 +910,17 @@ class ProjectTile extends StatelessWidget {
             url: project.githubUrl,
           ),
           const SizedBox(height: 14),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          Row(
             children: [
+              if (project.label.isNotEmpty)
+                _ProjectBadge(
+                  label: project.label,
+                  color: const Color(0xFF2563EB),
+                ),
+              const Spacer(),
               _ProjectBadge(
                 label: assignedHost == null ? 'Unassigned' : assignedHost!.name,
                 color: assignedHost?.color ?? const Color(0xFF374151),
-              ),
-              const _ProjectBadge(
-                label: 'Drag to deploy',
-                color: Color(0xFF1F2937),
               ),
             ],
           ),
@@ -842,6 +999,8 @@ class HostGrid extends StatelessWidget {
     required this.onMoveHostForward,
     required this.onProjectDropped,
     required this.onUnassignProject,
+    required this.onExport,
+    required this.onImport,
   });
 
   final List<RemoteHost> hosts;
@@ -856,6 +1015,8 @@ class HostGrid extends StatelessWidget {
   final ValueChanged<String> onMoveHostForward;
   final Future<void> Function(String projectId, String hostId) onProjectDropped;
   final Future<void> Function(String hostId) onUnassignProject;
+  final Future<void> Function() onExport;
+  final Future<void> Function() onImport;
 
   @override
   Widget build(BuildContext context) {
@@ -893,6 +1054,20 @@ class HostGrid extends StatelessWidget {
                 spacing: 12,
                 runSpacing: 12,
                 children: [
+                  if (isUnlocked) ...[
+                    OutlinedButton.icon(
+                      key: const Key('backup-button'),
+                      onPressed: () async => onExport(),
+                      icon: const Icon(Icons.upload_file),
+                      label: const Text('Backup'),
+                    ),
+                    OutlinedButton.icon(
+                      key: const Key('restore-button'),
+                      onPressed: () async => onImport(),
+                      icon: const Icon(Icons.download),
+                      label: const Text('Restore'),
+                    ),
+                  ],
                   OutlinedButton.icon(
                     key: const Key('toggle-host-lock'),
                     onPressed: () async {
@@ -1427,6 +1602,8 @@ class _ProjectEditorDialogState extends State<ProjectEditorDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
   late final TextEditingController _githubUrlController;
+  late final TextEditingController _labelController;
+  String _labelPreview = '';
 
   @override
   void initState() {
@@ -1437,12 +1614,22 @@ class _ProjectEditorDialogState extends State<ProjectEditorDialog> {
     _githubUrlController = TextEditingController(
       text: widget.initialProject?.githubUrl ?? '',
     );
+    _labelController = TextEditingController(
+      text: widget.initialProject?.label ?? '',
+    );
+    _labelPreview = slugifyLabel(_labelController.text);
+    _labelController.addListener(() {
+      setState(() {
+        _labelPreview = slugifyLabel(_labelController.text);
+      });
+    });
   }
 
   @override
   void dispose() {
     _nameController.dispose();
     _githubUrlController.dispose();
+    _labelController.dispose();
     super.dispose();
   }
 
@@ -1455,6 +1642,7 @@ class _ProjectEditorDialogState extends State<ProjectEditorDialog> {
       ProjectDraft(
         name: _nameController.text.trim(),
         githubUrl: _githubUrlController.text.trim(),
+        label: _labelPreview,
       ),
     );
   }
@@ -1469,6 +1657,7 @@ class _ProjectEditorDialogState extends State<ProjectEditorDialog> {
           key: _formKey,
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               TextFormField(
                 key: const Key('project-name-field'),
@@ -1499,6 +1688,24 @@ class _ProjectEditorDialogState extends State<ProjectEditorDialog> {
                   return null;
                 },
               ),
+              const SizedBox(height: 16),
+              TextFormField(
+                key: const Key('project-label-field'),
+                controller: _labelController,
+                decoration: const InputDecoration(
+                  labelText: 'Label (optional)',
+                  hintText: 'work, for mom, client-x',
+                ),
+              ),
+              if (_labelPreview.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Stored as: $_labelPreview',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white54,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1605,10 +1812,11 @@ class HostDraft {
 }
 
 class ProjectDraft {
-  const ProjectDraft({required this.name, required this.githubUrl});
+  const ProjectDraft({required this.name, required this.githubUrl, required this.label});
 
   final String name;
   final String githubUrl;
+  final String label;
 }
 
 class VibeProject {
@@ -1616,11 +1824,13 @@ class VibeProject {
     required this.id,
     required this.name,
     required this.githubUrl,
+    this.label = '',
   });
 
   final String id;
   final String name;
   final String githubUrl;
+  final String label;
 
   factory VibeProject.fromJson(Map<String, dynamic> json) {
     final id = json['id'];
@@ -1631,14 +1841,21 @@ class VibeProject {
         'Each project must include id, name, and githubUrl strings.',
       );
     }
-    return VibeProject(id: id, name: name, githubUrl: githubUrl);
+    final label = json['label'];
+    return VibeProject(
+      id: id,
+      name: name,
+      githubUrl: githubUrl,
+      label: label is String ? label : '',
+    );
   }
 
-  VibeProject copyWith({String? name, String? githubUrl}) {
+  VibeProject copyWith({String? name, String? githubUrl, String? label}) {
     return VibeProject(
       id: id,
       name: name ?? this.name,
       githubUrl: githubUrl ?? this.githubUrl,
+      label: label ?? this.label,
     );
   }
 
@@ -1646,6 +1863,7 @@ class VibeProject {
     'id': id,
     'name': name,
     'githubUrl': githubUrl,
+    'label': label,
   };
 }
 
@@ -2108,6 +2326,14 @@ Future<void> openExternalUrl(BuildContext context, String url) async {
   }
 }
 
+String slugifyLabel(String label) {
+  return label
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+}
+
 int nextIdNumber({required Iterable<String> ids, required String prefix}) {
   final pattern = RegExp('^${RegExp.escape(prefix)}(\\d+)\$');
   var highestNumber = 0;
@@ -2129,26 +2355,31 @@ List<VibeProject> seedProjects() => const [
     id: 'p1',
     name: 'VibeDash',
     githubUrl: 'https://github.com/mafudge/vibedash',
+    label: 'personal',
   ),
   VibeProject(
     id: 'p2',
     name: 'PromptForge',
     githubUrl: 'https://github.com/mafudge/promptforge',
+    label: 'work',
   ),
   VibeProject(
     id: 'p3',
     name: 'GhostWriter API',
     githubUrl: 'https://github.com/mafudge/ghostwriter-api',
+    label: 'work',
   ),
   VibeProject(
     id: 'p4',
     name: 'Campus Concierge',
     githubUrl: 'https://github.com/mafudge/campus-concierge',
+    label: 'school',
   ),
   VibeProject(
     id: 'p5',
     name: 'Syllabus Synth',
     githubUrl: 'https://github.com/mafudge/syllabus-synth',
+    label: 'school',
   ),
 ];
 
