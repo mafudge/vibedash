@@ -28,5 +28,7 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>VibeDash uses AppleScript to open Terminal and run the connect command for the selected host.</string>
 </dict>
 </plist>

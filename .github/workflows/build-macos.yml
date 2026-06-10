@@ -1,0 +1,40 @@
+name: Build macOS
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Enable macOS desktop
+        run: flutter config --enable-macos-desktop
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build macOS release
+        run: flutter build macos --release
+
+      - name: Create zip
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r "${{ github.workspace }}/vibedash-${{ github.ref_name }}-macos.zip" vibedash.app
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: vibedash-${{ github.ref_name }}-macos.zip
